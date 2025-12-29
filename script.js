@@ -21,6 +21,8 @@ function initEmptyTables() {
     request = createMatrix(n, m);
     available = Array(m).fill(0);
 
+    need = createMatrix(n, m);
+
     renderAll();
 }
 
@@ -78,6 +80,8 @@ function renderProcessSelector() {
 
 function matrixChange(id, i, j, val) {
     val = +val;
+    if (isNaN(val)) val = 0;
+
     if (id === "allocationTable") allocation[i][j] = val;
     if (id === "maxTable") max[i][j] = val;
     if (id === "requestTable") request[i][j] = val;
@@ -87,26 +91,57 @@ function matrixChange(id, i, j, val) {
 
 function loadFromFile(e) {
     const file = e.target.files[0];
+    if (!file) return;
+
     const reader = new FileReader();
 
     reader.onload = () => {
-        const lines = reader.result.trim().split("\n");
-        let idx = 0;
+        try {
+            const raw = reader.result.replace(/\r/g, "").trim();
+            const lines = raw.split("\n").filter(l => l.trim() !== "");
+            let idx = 0;
 
-        [n, m] = lines[idx++].split(" ").map(Number);
-        numProcesses.value = n;
-        numResources.value = m;
+            if (lines.length === 0)
+                throw "File rỗng";
 
-        allocation = readMatrix(lines, idx, n, m);
-        idx += n;
+            [n, m] = splitNumbers(lines[idx++], 2, "Dòng n m");
 
-        max = readMatrix(lines, idx, n, m);
-        idx += n;
+            if (n <= 0 || m <= 0)
+                throw "n và m phải > 0";
 
-        available = lines[idx].split(" ").map(Number);
-        request = createMatrix(n, m);
+            numProcesses.value = n;
+            numResources.value = m;
 
-        renderAll();
+            const expected = 1 + n + n + 1;
+            if (lines.length < expected)
+                throw `Thiếu dòng dữ liệu (cần ${expected}, có ${lines.length})`;
+
+            allocation = readMatrixSafe(lines, idx, n, m, "Allocation");
+            idx += n;
+
+            max = readMatrixSafe(lines, idx, n, m, "Max");
+            idx += n;
+
+            // Allocation ≤ Max
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < m; j++) {
+                    if (allocation[i][j] > max[i][j])
+                        throw `Lỗi logic: Allocation[P${i}][R${j}] > Max`;
+                }
+            }
+
+            available = splitNumbers(lines[idx], m, "Available");
+
+            request = createMatrix(n, m);
+            calculateNeed();
+
+            renderAll();
+            alert(" Load file thành công!");
+
+        } catch (err) {
+            alert(" Lỗi file:\n" + err);
+            console.error(err);
+        }
     };
 
     reader.readAsText(file);
@@ -114,13 +149,33 @@ function loadFromFile(e) {
 
 /* ====================== UTILS ====================== */
 
-function readMatrix(lines, start, r, c) {
-    return lines.slice(start, start + r)
-        .map(l => l.split(" ").map(Number));
-}
-
 function createMatrix(r, c) {
     return Array.from({ length: r }, () => Array(c).fill(0));
+}
+
+function splitNumbers(line, expected, label) {
+    const parts = line.trim().split(/[\s,]+/);
+    if (parts.length !== expected)
+        throw `${label}: cần ${expected} số, nhưng có ${parts.length}`;
+
+    const nums = parts.map(Number);
+    if (nums.some(isNaN))
+        throw `${label}: chứa giá trị không hợp lệ (NaN)`;
+
+    return nums;
+}
+
+function readMatrixSafe(lines, start, rows, cols, label) {
+    const matrix = [];
+    for (let i = 0; i < rows; i++) {
+        if (start + i >= lines.length)
+            throw `${label}: thiếu dòng tại P${i}`;
+
+        matrix.push(
+            splitNumbers(lines[start + i], cols, `${label}[P${i}]`)
+        );
+    }
+    return matrix;
 }
 
 /* ====================== BANKER CORE ====================== */
@@ -152,7 +207,9 @@ function runBankersAlgorithm() {
                 finish[i] = true;
                 safeSeq.push(`P${i}`);
 
-                steps.push(renderStep(step++, i, workBefore, need[i], allocation[i], work));
+                steps.push(renderStep(
+                    step++, i, workBefore, need[i], allocation[i], work
+                ));
                 found = true;
             }
         }
@@ -165,11 +222,13 @@ function runBankersAlgorithm() {
 /* ====================== REQUEST ====================== */
 
 function handleRequestClick() {
+    calculateNeed();
+
     const p = +requestProcess.value;
     const req = request[p];
 
     if (!req.every((v, j) => v <= need[p][j] && v <= available[j])) {
-        alert("Request không hợp lệ -> từ chối");
+        alert("Request không hợp lệ (vượt Need hoặc Available)");
         return;
     }
 
@@ -207,7 +266,13 @@ function renderStep(step, p, wb, needP, allocP, wa) {
 function displayResult(isSafe, seq, steps) {
     resultsCard.classList.add("show");
     statusBox.className = "status-box " + (isSafe ? "safe" : "unsafe");
-    statusHeader.innerText = isSafe ? "HỆ THỐNG AN TOÀN" : "HỆ THỐNG KHÔNG AN TOÀN";
-    safeSequence.innerText = isSafe ? "Chuỗi an toàn: " + seq.join(" → ") : "";
+    statusHeader.innerText = isSafe
+        ? "HỆ THỐNG AN TOÀN"
+        : "HỆ THỐNG KHÔNG AN TOÀN";
+
+    safeSequence.innerText = isSafe
+        ? "Chuỗi an toàn: " + seq.join(" → ")
+        : "";
+
     stepsContainer.innerHTML = steps.join("");
 }
