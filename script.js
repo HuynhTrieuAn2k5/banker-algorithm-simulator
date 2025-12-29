@@ -20,7 +20,6 @@ function initEmptyTables() {
     max = createMatrix(n, m);
     request = createMatrix(n, m);
     available = Array(m).fill(0);
-
     need = createMatrix(n, m);
 
     renderAll();
@@ -32,6 +31,7 @@ function renderAll() {
     renderTable("allocationTable", allocation, "A");
     renderTable("maxTable", max, "M");
     renderTable("requestTable", request, "R");
+    renderTable("needTable", need, "N");
     renderAvailable();
     renderProcessSelector();
 }
@@ -57,34 +57,34 @@ function renderTable(id, matrix, prefix) {
 }
 
 function renderAvailable() {
-    const div = availableInputs;
-    div.innerHTML = "";
+    availableInputs.innerHTML = "";
     available.forEach((v, j) => {
-        div.innerHTML += `
+        availableInputs.innerHTML += `
             <div>
                 <label>R${j}</label>
                 <input type="number" value="${v}"
-                    onchange="available[${j}]=+this.value">
+                    onchange="available[${j}] = +this.value">
             </div>`;
     });
 }
 
 function renderProcessSelector() {
     requestProcess.innerHTML = "";
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n; i++)
         requestProcess.innerHTML += `<option value="${i}">P${i}</option>`;
-    }
 }
 
 /* ====================== DATA CHANGE ====================== */
 
 function matrixChange(id, i, j, val) {
-    val = +val;
+    val = Number(val);
     if (isNaN(val)) val = 0;
 
     if (id === "allocationTable") allocation[i][j] = val;
     if (id === "maxTable") max[i][j] = val;
     if (id === "requestTable") request[i][j] = val;
+
+    calculateNeed();
 }
 
 /* ====================== FILE LOAD ====================== */
@@ -94,27 +94,16 @@ function loadFromFile(e) {
     if (!file) return;
 
     const reader = new FileReader();
-
     reader.onload = () => {
         try {
-            const raw = reader.result.replace(/\r/g, "").trim();
-            const lines = raw.split("\n").filter(l => l.trim() !== "");
+            const lines = reader.result.replace(/\r/g, "")
+                .split("\n").map(l => l.trim()).filter(l => l !== "");
+
             let idx = 0;
 
-            if (lines.length === 0)
-                throw "File rỗng";
-
-            [n, m] = splitNumbers(lines[idx++], 2, "Dòng n m");
-
-            if (n <= 0 || m <= 0)
-                throw "n và m phải > 0";
-
+            [n, m] = splitNumbers(lines[idx++], 2, "n m");
             numProcesses.value = n;
             numResources.value = m;
-
-            const expected = 1 + n + n + 1;
-            if (lines.length < expected)
-                throw `Thiếu dòng dữ liệu (cần ${expected}, có ${lines.length})`;
 
             allocation = readMatrixSafe(lines, idx, n, m, "Allocation");
             idx += n;
@@ -122,28 +111,23 @@ function loadFromFile(e) {
             max = readMatrixSafe(lines, idx, n, m, "Max");
             idx += n;
 
-            // Allocation ≤ Max
-            for (let i = 0; i < n; i++) {
-                for (let j = 0; j < m; j++) {
+            for (let i = 0; i < n; i++)
+                for (let j = 0; j < m; j++)
                     if (allocation[i][j] > max[i][j])
-                        throw `Lỗi logic: Allocation[P${i}][R${j}] > Max`;
-                }
-            }
+                        throw `Allocation[P${i}][R${j}] > Max`;
 
             available = splitNumbers(lines[idx], m, "Available");
 
             request = createMatrix(n, m);
             calculateNeed();
-
             renderAll();
-            alert(" Load file thành công!");
 
+            alert(" Load file thành công!");
         } catch (err) {
             alert(" Lỗi file:\n" + err);
             console.error(err);
         }
     };
-
     reader.readAsText(file);
 }
 
@@ -154,27 +138,16 @@ function createMatrix(r, c) {
 }
 
 function splitNumbers(line, expected, label) {
-    const parts = line.trim().split(/[\s,]+/);
-    if (parts.length !== expected)
-        throw `${label}: cần ${expected} số, nhưng có ${parts.length}`;
-
-    const nums = parts.map(Number);
-    if (nums.some(isNaN))
-        throw `${label}: chứa giá trị không hợp lệ (NaN)`;
-
-    return nums;
+    const arr = line.split(/[\s,]+/).map(Number);
+    if (arr.length !== expected || arr.some(isNaN))
+        throw `${label} không hợp lệ`;
+    return arr;
 }
 
-function readMatrixSafe(lines, start, rows, cols, label) {
+function readMatrixSafe(lines, start, r, c, label) {
     const matrix = [];
-    for (let i = 0; i < rows; i++) {
-        if (start + i >= lines.length)
-            throw `${label}: thiếu dòng tại P${i}`;
-
-        matrix.push(
-            splitNumbers(lines[start + i], cols, `${label}[P${i}]`)
-        );
-    }
+    for (let i = 0; i < r; i++)
+        matrix.push(splitNumbers(lines[start + i], c, `${label}[P${i}]`));
     return matrix;
 }
 
@@ -182,7 +155,7 @@ function readMatrixSafe(lines, start, rows, cols, label) {
 
 function calculateNeed() {
     need = allocation.map((row, i) =>
-        row.map((v, j) => max[i][j] - v)
+        row.map((v, j) => Math.max(0, max[i][j] - v))
     );
     renderTable("needTable", need, "N");
 }
@@ -192,6 +165,9 @@ function runBankersAlgorithm() {
 
     let work = [...available];
     let finish = Array(n).fill(false);
+    let needSim = need.map(r => [...r]);
+    let allocSim = allocation.map(r => [...r]);
+
     let safeSeq = [];
     let steps = [];
     let step = 1;
@@ -200,15 +176,15 @@ function runBankersAlgorithm() {
         let found = false;
 
         for (let i = 0; i < n; i++) {
-            if (!finish[i] && need[i].every((v, j) => v <= work[j])) {
-
+            if (!finish[i] && needSim[i].every((v, j) => v <= work[j])) {
                 const workBefore = [...work];
-                work = work.map((v, j) => v + allocation[i][j]);
+
+                work = work.map((v, j) => v + allocSim[i][j]);
                 finish[i] = true;
                 safeSeq.push(`P${i}`);
 
                 steps.push(renderStep(
-                    step++, i, workBefore, need[i], allocation[i], work
+                    step++, i, workBefore, needSim[i], allocSim[i], work
                 ));
                 found = true;
             }
@@ -219,7 +195,7 @@ function runBankersAlgorithm() {
     displayResult(finish.every(v => v), safeSeq, steps);
 }
 
-/* ====================== REQUEST ====================== */
+/* ====================== REQUEST (CHUẨN BANKER) ====================== */
 
 function handleRequestClick() {
     calculateNeed();
@@ -227,24 +203,80 @@ function handleRequestClick() {
     const p = +requestProcess.value;
     const req = request[p];
 
-    if (!req.every((v, j) => v <= need[p][j] && v <= available[j])) {
-        alert("Request không hợp lệ (vượt Need hoặc Available)");
+    // 1. Request > Need
+    if (!req.every((v, j) => v <= need[p][j])) {
+        alert(`Request của P${p} vượt NEED → TỪ CHỐI`);
         return;
     }
 
+    // 2. Request > Available
+    if (!req.every((v, j) => v <= available[j])) {
+        alert(` Tài nguyên chưa đủ → P${p} PHẢI CHỜ`);
+        return;
+    }
+
+    // 3. GIẢ LẬP CẤP PHÁT
+    let availSim = [...available];
+    let allocSim = allocation.map(r => [...r]);
+    let needSim  = need.map(r => [...r]);
+
+    req.forEach((v, j) => {
+        availSim[j] -= v;
+        allocSim[p][j] += v;
+        needSim[p][j] -= v;
+    });
+
+    // 4. KIỂM TRA AN TOÀN
+    const check = checkSafety(availSim, allocSim, needSim);
+
+    if (!check.isSafe) {
+        alert(" Request bị từ chối vì gây TRẠNG THÁI KHÔNG AN TOÀN");
+        return;
+    }
+
+    // 5. CẤP PHÁT THẬT
     req.forEach((v, j) => {
         available[j] -= v;
         allocation[p][j] += v;
-        need[p][j] -= v;
     });
 
+    calculateNeed();
+
+    alert(`✔ Request của P${p} ĐƯỢC CHẤP NHẬN\nChuỗi an toàn: ${check.seq.join(" → ")}`);
     runBankersAlgorithm();
+}
+
+/* ====================== SAFETY CHECK ====================== */
+
+function checkSafety(avail, alloc, needMat) {
+    let work = [...avail];
+    let finish = Array(n).fill(false);
+    let seq = [];
+
+    while (seq.length < n) {
+        let found = false;
+
+        for (let i = 0; i < n; i++) {
+            if (!finish[i] && needMat[i].every((v, j) => v <= work[j])) {
+                work = work.map((v, j) => v + alloc[i][j]);
+                finish[i] = true;
+                seq.push(`P${i}`);
+                found = true;
+            }
+        }
+        if (!found) break;
+    }
+
+    return {
+        isSafe: finish.every(v => v),
+        seq
+    };
 }
 
 /* ====================== STEP VIEW ====================== */
 
 function renderStep(step, p, wb, needP, allocP, wa) {
-    const row = arr => arr.map(v => `<td>${v}</td>`).join("");
+    const row = a => a.map(v => `<td>${v}</td>`).join("");
     return `
     <div class="step">
         <b>Bước ${step}: P${p}</b>
